@@ -293,7 +293,7 @@ namespace Vault2Git.Lib
                                 if (txdetailitem.RequestType == VaultRequestType.Delete)
                                 {
                                     if (string.IsNullOrEmpty(txdetailitem.ItemPath1))
-                                        fil = GetPath(version.Value.TrxId, txdetailitem, vaultRepoPath, version.Key, true);
+                                        fil = GetPath(txdetailitem, vaultRepoPath, version.Key, true);
 
 
                                     // Convert the Vault path to a file system path
@@ -321,8 +321,8 @@ namespace Vault2Git.Lib
                                          txdetailitem.RequestType == VaultRequestType.Rename)
                                 {
                                     if (string.IsNullOrEmpty(txdetailitem.ItemPath1))
-                                        fil = GetPath(version.Value.TrxId, txdetailitem, vaultRepoPath, version.Key);
-
+                                        fil = GetPath(txdetailitem, vaultRepoPath, version.Key);
+                                    // TODO: if OtherObjectID = ItemPath2,  we could fixup that as well, if we wanted...
 
                                     ProcessFileItem(vaultRepoPath, WorkingFolder, txdetailitem, true);
                                     continue;
@@ -330,7 +330,7 @@ namespace Vault2Git.Lib
                                 else if (txdetailitem.RequestType == VaultRequestType.Share)
                                 {
                                     if (string.IsNullOrEmpty(txdetailitem.ItemPath1))
-                                        fil = GetPath(version.Value.TrxId,txdetailitem, vaultRepoPath, version.Key);
+                                        fil = GetPath(txdetailitem, vaultRepoPath, version.Key);
 
                                     ProcessFileItem(vaultRepoPath, WorkingFolder, txdetailitem, false);
                                     continue;
@@ -350,13 +350,12 @@ namespace Vault2Git.Lib
                                 // so throw an exception to cause whole tree to be refreshed.
 
                                 if (string.IsNullOrEmpty(txdetailitem.ItemPath1))
-                                    fil = GetPath(version.Value.TrxId,txdetailitem, vaultRepoPath, version.Key);
-
+                                    fil = GetPath(txdetailitem, vaultRepoPath, version.Key);
 
                                 if (txdetailitem.ItemPath1.StartsWith(vaultRepoPath, true, System.Globalization.CultureInfo.CurrentCulture))
                                 {
                                     // Apply the changes from vault of the correct version for this file 
-                                    vaultGetFile(vaultRepoPath, txdetailitem, fil);
+                                    vaultGetFile(vaultRepoPath, txdetailitem, () => fil ?? GetClientFile(vaultRepoPath, version.Key, txdetailitem));
                                 }
                                 else
                                 {
@@ -412,6 +411,7 @@ namespace Vault2Git.Lib
                                 var anyDeleted = txnInfo.items.Where(it => it.RequestType == VaultRequestType.Delete).Any();
                                 anyDeleted |= txnInfo.items.Where(it => it.RequestType == VaultRequestType.Move).Any();
                                 anyDeleted |= txnInfo.items.Where(it => it.RequestType == VaultRequestType.Rename).Any();
+
                                 vaultGetFolder(vaultRepoPath, version.Key, version.Value.TrxId, anyDeleted);
 
                                 //change all sln files
@@ -502,181 +502,29 @@ namespace Vault2Git.Lib
             return false;
         }
 
-        VaultFolderDelta pLAstDelta;
-        string lastFullPAth;
-        long lastID;
-        long lastVer;
-
-
-        private VaultClientFile GetPath(long tx, VaultTxDetailHistoryItem txdetailitem, string vaultRepoPath, long version, bool delFile = false)
+        private VaultClientFile GetPath(VaultTxDetailHistoryItem txdetailitem, string vaultRepoPath, long version, bool delFile = false)
         {
             if (delFile)
                 version = version - 1;
 
-            ServerOperations.client.ClientInstance.Refresh();
+            VaultClientFolder f = GetClientFolder(vaultRepoPath, version);
 
-            VaultClientTreeObject obj2 = RepositoryUtil.FindVaultTreeObjectAtReposOrLocalPath(vaultRepoPath);
-
-            VaultClientFolder f = (VaultClientFolder)obj2;
-            f.Version = version;
-            VaultFolderDelta vfTreeBranchDelta = new VaultFolderDelta();
-            try
+            var file = f.FindFileRecursive(txdetailitem.ID);
+            if (file != null)
             {
-                if (pLAstDelta != null && lastFullPAth == obj2.FullPath && lastID == f.ID && lastVer == version)
-                {
-                    vfTreeBranchDelta = pLAstDelta;
-                }
-                else
-                {
-                    ServerOperations.client.ClientInstance.Connection.GetBranchStructure(ServerOperations.client.ClientInstance.ActiveRepositoryID,
-                        obj2.FullPath, f.ID, (long)version, ref vfTreeBranchDelta, false);
-
-                    pLAstDelta = vfTreeBranchDelta;
-                    lastFullPAth = obj2.FullPath;
-                    lastID = f.ID;
-                    lastVer = version;
-                }
-            }
-            catch
-            {
-
-                if (vfTreeBranchDelta.ObjVerID < 1L)
-                {
-                    throw new Exception("lol");// string.Concat(new object[] { "There is no version ", version, " of ", obj2.FullPath, " in ", ServerOperations.client.ClientInstance.Repository.RepName, "." }));
-                }
-                throw;
-            }
-            f = new VaultClientFolder(vfTreeBranchDelta, f.Parent);
-            var v1 = f.FindFileRecursive(txdetailitem.ID);
-            //var v2 = f.FindFileRecursive(txdetailitem.ID, f.Parent);
-
-            if (v1 != null)
-            {
-
-                txdetailitem.ItemPath1 = v1.FullPath;
+                txdetailitem.ItemPath1 = file.FullPath;
                 Console.WriteLine("itempath " + txdetailitem.ItemPath1 + " id " + txdetailitem.ID);
-
-
-                //            throw new Exception("no path");
-                return v1;
+                return file;
             }
 
-           var f1 = f.FindFolderRecursive(txdetailitem.ID);
+            var dir = f.FindFolderRecursive(txdetailitem.ID);
+            if (dir == null)
+                throw new Exception("Not found");
 
-            txdetailitem.ItemPath1 = f1.FullPath;
+            txdetailitem.ItemPath1 = dir.FullPath;
             Console.WriteLine("itempath " + txdetailitem.ItemPath1 + " id " + txdetailitem.ID);
 
-
-            //            throw new Exception("no path");
-            return null;// f1;
-
-
-
-            List<long> ints = new List<long>();
-            ints.Add(txdetailitem.ID);
-            foreach (var hi in txdetailitem.HistoryItems)
-            {
-                if (!ints.Contains(hi.ID))
-                    ints.Add(hi.ID);
-            }
-
-            List<string> strs = new List<string>();
-            foreach (var i in ints)
-            {
-                VaultClientTreeObjectColl g = VaultClientIntegrationLib.RepositoryUtil.FindVaultTreeObjectsByObjID((long)i);// hi.ID);
-
-                foreach (VaultClientTreeObject gg in g)
-                {
-                    strs.Add(gg.FullPath);
-                }
-
-                //if (g.Count != 0)
-                //{
-                //    strs.Add(g.Cast<VaultClientTreeObject>().Single().FullPath);
-                //    break;
-                //}
-
-                //if (g.Count != 0)
-                //{
-                //    strs.Add(g.Cast<VaultClientTreeObject>().Single().FullPath);
-                //    break;
-                //}
-
-            }
-
-            var dist = strs.Distinct().ToList(); ;
-            if (dist.Count > 1)
-            {
-                dist = dist.Where(d => d.EndsWith("/" + txdetailitem.Name)).ToList();
-            }
-
-            if (dist.Count == 0)
-            {
-                // file should already exist locally
-                if (txdetailitem.RequestType == VaultRequestType.CheckIn || txdetailitem.RequestType == VaultRequestType.Delete) 
-                {
-                    var files = Directory.GetFiles(
-                                    WorkingFolder,
-                                    txdetailitem.Name,
-                                    SearchOption.AllDirectories);
-                    if (files.Length == 1)
-                    {
-                        // Convert the Vault path to a file system path
-                        //String ItemPath1 = String.Copy(txdetailitem.ItemPath1);
-                        var str = files[0];
-                        // Ensure the file is within the folder we are working with. 
-                        if (str.StartsWith(WorkingFolder, true, System.Globalization.CultureInfo.CurrentCulture))
-                        {
-                            str = str.Replace(WorkingFolder, vaultRepoPath, StringComparison.CurrentCultureIgnoreCase);
-                            str = str.Replace('\\', '/');
-
-                            txdetailitem.ItemPath1 = str;
-                            //   txdetailitem.ItemPath1 = VaultClientIntegrationLib.RepositoryUtil.FindVaultTreeObjectAtReposOrLocalPath(files[0]).FullPath;
-                        }
-                    }
-                    else if (txdetailitem.RequestType == VaultRequestType.Delete && files.Length == 0)
-                    {
-                        files = Directory.GetDirectories(
-                                    WorkingFolder,
-                                    txdetailitem.Name,
-                                    SearchOption.AllDirectories);
-
-                        if (files.Length == 1)
-                        {
-                            // Convert the Vault path to a file system path
-                            //String ItemPath1 = String.Copy(txdetailitem.ItemPath1);
-                            var str = files[0];
-                            // Ensure the file is within the folder we are working with. 
-                            if (str.StartsWith(WorkingFolder, true, System.Globalization.CultureInfo.CurrentCulture))
-                            {
-                                str = str.Replace(WorkingFolder, vaultRepoPath, StringComparison.CurrentCultureIgnoreCase);
-                                str = str.Replace('\\', '/');
-
-                                txdetailitem.ItemPath1 = str;
-                                //   txdetailitem.ItemPath1 = VaultClientIntegrationLib.RepositoryUtil.FindVaultTreeObjectAtReposOrLocalPath(files[0]).FullPath;
-                            }
-                        }
-                    }
-                }
-            }
-            else
-            {
-                txdetailitem.ItemPath1 = dist.Single();
-            }
-
-            if (string.IsNullOrEmpty(txdetailitem.ItemPath1))
-            {
-                var rep = ServerOperations.client.ClientInstance.GetRepositoryAt(tx);
-                var clientFile = rep.Root.FindFileRecursive(txdetailitem.ID);
-                var clientFile2 = rep.Root.FindFolderRecursive(txdetailitem.ID);
-                VaultClientFolderColl gg = new VaultClientFolderColl();
-                rep.Root.FindFoldersRecursive(txdetailitem.ID, ref gg);
-
-                VaultClientTreeObjectColl hh = new VaultClientTreeObjectColl();
-                rep.Root.FindTreeObjectsRecursive(txdetailitem.ID, ref hh);
-
-                throw new Exception();
-            }
+            return null;
         }
 
 
@@ -873,7 +721,7 @@ namespace Vault2Git.Lib
                 // if an error occurs, wait and then retry the operation. We may be running too fast for Vault
                 System.Threading.Thread.Sleep(TimeSpan.FromSeconds(5.0));
 
-                vaultProcessCommandGetVersion(repoPath, version, true, anyDeleted,null);
+                vaultProcessCommandGetVersion(repoPath, version, true, anyDeleted, null);
             }
 
             //now process deletions, moves, and renames (due to vault bug)
@@ -904,14 +752,14 @@ namespace Vault2Git.Lib
             }
         }
 
-        private void vaultGetFile(string repoPath, VaultTxDetailHistoryItem txdetailitem,VaultClientFile fil)
+        private void vaultGetFile(string repoPath, VaultTxDetailHistoryItem txdetailitem, Func<VaultClientFile> getFile)//, VaultClientFile fil)
         {
             // Allow exception to percolate up. Presume its due to a file missing from the latest Version 
             // thats in this Version. That is, this file is later deleted, moved or renamed.
 
             //apply version to the repo folder
             if (Verbose) Console.WriteLine("get {0} version {1}", txdetailitem.ItemPath1, txdetailitem.Version);
-            vaultProcessCommandGetVersion(txdetailitem.ItemPath1, txdetailitem.Version, false, false, fil);
+            vaultProcessCommandGetVersion(txdetailitem.ItemPath1, txdetailitem.Version, false, false, getFile);
             if (Verbose) Console.WriteLine("get {0} version {1} SUCCESS!", txdetailitem.ItemPath1, txdetailitem.Version);
 
             //now process deletions, moves, and renames (due to vault bug)
@@ -943,32 +791,30 @@ namespace Vault2Git.Lib
             }
         }
 
-        private void vaultProcessCommandGetVersion(string repoPath, long version, bool recursive, bool anyDeleted, VaultClientFile id)
+        private void vaultProcessCommandGetVersion(string repoPath, long version, bool recursive, bool anyDeleted, Func<VaultClientFile> getFile)
         {
-            if (anyDeleted)
+            // Must delete everything first otherwise deleted files are not deleted.
+            // FIXME: this looks completely useless now in both fast and slow mode???
+            if (recursive && anyDeleted)
             {
-                // Must delete everything first otherwise deleted files are not deleted.
-                if (recursive)
-                {
-                    Console.WriteLine("Delete everything...");
+                Console.WriteLine("Delete everything...");
 
-                    if (Verbose) Console.WriteLine("Getting entire vault path " + repoPath);
-                    try
-                    {
-                        Statics.DeleteWorkingDirectory(WorkingFolder);
-                    }
-                    catch (IOException e)
-                    {
-                        // Directory not empty? Presume its a handle still opened by Explorer or a permissions issue. Just continue. Vault get will fail if there is a real issue.
-                        Console.WriteLine("IO err " + e);
-                    }
-                    catch (Exception e)
-                    {
-                        Console.WriteLine("Weird err " + e);
-                        throw;
-                    }
-                    Thread.Sleep(500); // Allow file system to apply directory changes
+                if (Verbose) Console.WriteLine("Getting entire vault path " + repoPath);
+                try
+                {
+                    Statics.DeleteWorkingDirectory(WorkingFolder);
                 }
+                catch (IOException e)
+                {
+                    // Directory not empty? Presume its a handle still opened by Explorer or a permissions issue. Just continue. Vault get will fail if there is a real issue.
+                    Console.WriteLine("IO err " + e);
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine("Weird err " + e);
+                    throw;
+                }
+                Thread.Sleep(500); // Allow file system to apply directory changes
             }
 
             //apply version to the repo folder
@@ -981,68 +827,107 @@ namespace Vault2Git.Lib
             }
             else
             {
-                //            GetOperations.ProcessCommandGetVersion
-                ProcessCommandGetVersion(
-                    repoPath,
-                    Convert.ToInt32(version),
-                    new GetOptions()
-                    {
-                        MakeWritable = MakeWritableType.MakeAllFilesWritable,
-                        Merge = MergeType.OverwriteWorkingCopy,
-                        OverrideEOL = VaultEOL.None,
+                var opt = new GetOptions()
+                {
+                    MakeWritable = MakeWritableType.MakeAllFilesWritable,
+                    Merge = MergeType.OverwriteWorkingCopy,
+                    OverrideEOL = VaultEOL.None,
                     //remove working copy does not work -- bug http://support.sourcegear.com/viewtopic.php?f=5&t=11145
                     PerformDeletions = PerformDeletionsType.RemoveWorkingCopy,
-                        SetFileTime = SetFileTimeType.Modification,
-                        Recursive = recursive
-                    }, id);
+                    SetFileTime = SetFileTimeType.Modification,
+                    Recursive = recursive
+                };
+
+                try
+                {
+                    GetOperations.ProcessCommandGetVersion(repoPath, Convert.ToInt32(version), opt);
+                }
+				catch
+				{
+                    if (getFile == null)
+                        throw;
+
+                    VaultClientFile cf = getFile();
+                    ProcessCommandGetVersion(cf, Convert.ToInt32(version), opt);
+
+                }
             }
 
             Console.WriteLine("GOT version " + version + " " + DateTime.Now);
         }
 
-        [LocalOrRemotePath("objectPath")]
-        public static void ProcessCommandGetVersion(string objectPath, int version, GetOptions getOptions, VaultClientFile id)
+		private VaultClientFile GetClientFile(string vaultRepoPath, long version, VaultTxDetailHistoryItem txdetailitem)
+		{
+			VaultClientFolder f = GetClientFolder(vaultRepoPath, version);
+
+			var file = f.FindFileRecursive(txdetailitem.ID);
+			if (file != null)
+			{
+				txdetailitem.ItemPath1 = file.FullPath;
+				Console.WriteLine("itempath " + txdetailitem.ItemPath1 + " id " + txdetailitem.ID);
+				return file;
+			}
+
+			throw new Exception("Not found");
+		}
+
+        VaultFolderDelta pLastDelta;
+        string pLastFullPath;
+        long pLastID;
+        long pLastVer;
+
+        private VaultClientFolder GetClientFolder(string vaultRepoPath, long version)
+		{
+			ServerOperations.client.ClientInstance.Refresh();
+
+			VaultClientTreeObject obj2 = RepositoryUtil.FindVaultTreeObjectAtReposOrLocalPath(vaultRepoPath);
+
+			VaultClientFolder f = (VaultClientFolder)obj2;
+			f.Version = version;
+			VaultFolderDelta vfTreeBranchDelta = new VaultFolderDelta();
+			try
+			{
+				if (pLastDelta != null && pLastFullPath == obj2.FullPath && pLastID == f.ID && pLastVer == version)
+				{
+					vfTreeBranchDelta = pLastDelta;
+				}
+				else
+				{
+					ServerOperations.client.ClientInstance.Connection.GetBranchStructure(ServerOperations.client.ClientInstance.ActiveRepositoryID,
+						obj2.FullPath, f.ID, (long)version, ref vfTreeBranchDelta, false);
+
+					pLastDelta = vfTreeBranchDelta;
+					pLastFullPath = obj2.FullPath;
+					pLastID = f.ID;
+					pLastVer = version;
+				}
+			}
+			catch
+			{
+				if (vfTreeBranchDelta.ObjVerID < 1L)
+				{
+					throw new Exception(string.Concat(new object[] { "There is no version ", version, " of ", obj2.FullPath, " in ", ServerOperations.client.ClientInstance.Repository.RepName, "." }));
+				}
+				throw;
+			}
+
+			f = new VaultClientFolder(vfTreeBranchDelta, f.Parent);
+			return f;
+		}
+
+		[LocalOrRemotePath("objectPath")]
+        public static void ProcessCommandGetVersion(VaultClientFile _file, int version, GetOptions getOptions)
         {
-            performGetVersion(objectPath, version, null, getOptions, id);
+            performGetVersion(_file, version, null, getOptions);
         }
 
 
-        private static void performGetVersion(string objectPath, int version, string strDestFolder, GetOptions getOptions, VaultClientFile id)
+        private static void performGetVersion(VaultClientFile _file, int version, string strDestFolder, GetOptions getOptions)
         {
             try
             {
-                //ServerOperations.client.ClientInstance.Refresh();
-
-    //            var tc = ServerOperations.client.ClientInstance.TreeCache;
-  //              var rev = tc.ServerSynchedRepository.RepID;
-//                if (rev == -1)
                 ServerOperations.client.ClientInstance.Refresh();
-                //bool flag;
-                //SimpleLogger.Log.WriteLine("refresh", "Refresh started");
-                //if (this._treeCache == null)
-                //{
-                //    SimpleLogger.Log.WriteLine("refresh", "Refresh finished");
-                //    return false;
-                //}
-                //if ((knownServerRevision != -1L) && (this._treeCache.ServerSynchedRepository.RevID == knownServerRevision))
-                //{
-                //    SimpleLogger.Log.WriteLine("refresh", "Refresh finished");
-                //    return true;
-                //}
-
-                VaultClientTreeObject obj2 = null;
-                try
-                {
-                    obj2 = RepositoryUtil.FindVaultTreeObjectAtReposOrLocalPath(objectPath);
-                    id = null;
-                }
-                catch
-                {
-                    if (id == null)
-                        throw;
-                    obj2 = id;// RepositoryUtil.FindVaultTreeObjectAtReposOrLocalPath(objectPath);
-
-                }
+ 
                 MergeType merge = getOptions.Merge;
                 switch (merge)
                 {
@@ -1063,74 +948,17 @@ namespace Vault2Git.Lib
                 ServerOperations.client.ClientInstance.WorkingFolderOptions.OverrideNativeEOL = (int)getOptions.OverrideEOL;
                 try
                 {
-                    if (obj2 is VaultClientFolder)
+                    VaultClientFile file = new VaultClientFile(_file)
                     {
-                        VaultClientFolder f = (VaultClientFolder)obj2;
-                        f.Version = version;
-                        VaultFolderDelta vfTreeBranchDelta = new VaultFolderDelta();
-                        try
-                        {
-                            ServerOperations.client.ClientInstance.Connection.GetBranchStructure(ServerOperations.client.ClientInstance.ActiveRepositoryID, obj2.FullPath, f.ID, (long)version, ref vfTreeBranchDelta, false);
-                        }
-                        catch
-                        {
-                            if (vfTreeBranchDelta.ObjVerID < 1L)
-                            {
-                                throw new Exception(string.Concat(new object[] { "There is no version ", version, " of ", obj2.FullPath, " in ", ServerOperations.client.ClientInstance.Repository.RepName, "." }));
-                            }
-                            throw;
-                        }
-                        f = new VaultClientFolder(vfTreeBranchDelta, f.Parent);
-                        if (strDestFolder == null)
-                        {
-                            if (ServerOperations.client.ClientInstance.TreeCache.GetBestWorkingFolder(f) == null)
-                            {
-                                throw new Exception(f.FullPath + " has no working folder set.");
-                            }
-                            responseArray = ServerOperations.client.ClientInstance.Get(f, getOptions.Recursive, false, getOptions.MakeWritable, getOptions.SetFileTime, merge, null);
-                        }
-                        else
-                        {
-                            responseArray = ServerOperations.client.ClientInstance.GetByDisplayVersionToNonWorkingFolder(f, getOptions.Recursive, getOptions.MakeWritable, getOptions.SetFileTime, strDestFolder, null);
-                        }
-                    }
-                    else if (id != null)
+                        Version = version
+                    };
+                    if (strDestFolder == null)
                     {
-                        VaultClientFile file = (VaultClientFile)obj2;
-           //             if (file.Version != version)
-             //               throw new Exception("vvv");
-                        //file = new VaultClientFile(ServerOperations.client.ClientInstance.TreeCache.Repository.Root.FindFileRecursive(obj2.FullPath))
-                        //{
-                        //    Version = version
-                        //};
-                        file = new VaultClientFile(file)//ServerOperations.client.ClientInstance.TreeCache.Repository.Root.FindFileRecursive(id.ID))//obj2.FullPath))
-                        {
-                            Version = version
-                        };
-                        if (strDestFolder == null)
-                        {
-                            responseArray = ServerOperations.client.ClientInstance.GetByDisplayVersion(file, getOptions.MakeWritable, getOptions.SetFileTime, merge, null);
-                        }
-                        else
-                        {
-                            responseArray = ServerOperations.client.ClientInstance.GetByDisplayVersionToNonWorkingFolder(file, getOptions.MakeWritable, getOptions.SetFileTime, file.Parent.FullPath, strDestFolder, null);
-                        }
+                        responseArray = ServerOperations.client.ClientInstance.GetByDisplayVersion(file, getOptions.MakeWritable, getOptions.SetFileTime, merge, null);
                     }
                     else
                     {
-                        VaultClientFile file = (VaultClientFile)obj2;
-                        file = new VaultClientFile(ServerOperations.client.ClientInstance.TreeCache.Repository.Root.FindFileRecursive(obj2.FullPath))
-                        {
-                            Version = version
-                        };
-                        if (strDestFolder == null)
-                        {
-                            responseArray = ServerOperations.client.ClientInstance.GetByDisplayVersion(file, getOptions.MakeWritable, getOptions.SetFileTime, merge, null);
-                        }
-                        else
-                        {
-                            responseArray = ServerOperations.client.ClientInstance.GetByDisplayVersionToNonWorkingFolder(file, getOptions.MakeWritable, getOptions.SetFileTime, file.Parent.FullPath, strDestFolder, null);
-                        }
+                        responseArray = ServerOperations.client.ClientInstance.GetByDisplayVersionToNonWorkingFolder(file, getOptions.MakeWritable, getOptions.SetFileTime, file.Parent.FullPath, strDestFolder, null);
                     }
                 }
                 finally
@@ -1139,7 +967,7 @@ namespace Vault2Git.Lib
                 }
                 if (responseArray == null)
                 {
-                    throw new Exception($"Error getting {obj2.FullPath}: Version does not exist.");
+                    throw new Exception($"Error getting {_file.FullPath}: Version does not exist.");
                 }
                 foreach (VaultGetResponse response in responseArray)
                 {
@@ -1158,16 +986,6 @@ namespace Vault2Git.Lib
                 throw exception;
             }
         }
-
-
-
-
-
-
-
-
-
-
 
 
         public void ProcessFileItem(String vaultRepoPath, String workingFolder, VaultTxDetailHistoryItem txdetailitem, bool moveFiles)
